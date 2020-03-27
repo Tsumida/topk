@@ -1,16 +1,16 @@
 use std::collections::{HashMap, BinaryHeap};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Write, BufWriter};
 use std::cmp::{Ordering, Ord, Reverse};
 
 use serde::{Serialize, Deserialize};
 
-//   Mapper:
+//   Mapper: 
 //  设每条url2KB(IE, 2083char, 如果是ascii --> 2KB)
 //  100GB url ==> 50 M条, 用u32
 //  hasher 承载因子 50%, 每条记录2KB(url) + 24B(String) + 4B(cnt) = 2076B
 //  1K条url需要 2 x 2076 B x 1000 = 4.15MB，
-//  1 GB内存分配 --> 一次最多读入200K条，要830MB, 剩下部分给buffer + 控制 --> 250次
+//  1 GB内存分配 --> 一次最多读入200K条，要830MB, 剩下部分给buffer + 其他--> 250次
 //  这里是否要考虑 HashMap的动态扩容问题？ 
 
 #[derive(Eq, Debug, Serialize, Deserialize)]
@@ -40,10 +40,10 @@ impl PartialEq for StatEntry {
 
 fn core(){
     // 统计url次数
-    let path = "./src/urls/case_1.txt";
+    let path = "./src/urls/case_2.txt";
     let bf_cap = 100 * (1 << 20); // 100MB
     let hash_cap = 100 * (1 << 20); 
-    let k = 10; // 前10
+    let k = 4; // top k
 
     // read file. 
     let bf = BufReader::with_capacity(
@@ -63,15 +63,12 @@ fn core(){
                 url: k.clone(),
                 cnt: *v,
             }));
-        }else{
-            let t = bheap.peek().unwrap();
-            let q = Reverse(StatEntry{
+        }else if *v > bheap.peek().unwrap().0.cnt{ // 前K个元素最小的一个
+            let _ = bheap.pop();
+            bheap.push(Reverse(StatEntry{
                 url: k.clone(),
                 cnt: *v,
-            });
-            if &q > t{
-                bheap.push(q);
-            }
+            }));
         }
     }
 
@@ -89,12 +86,41 @@ fn core(){
 }
 
 fn gen_case(){
-    fn random_string(l: usize){
-        assert!(l > 0);
+    //let max_size = 1024; // url长度在1024Byte以内;
+    //let k = 20; // top k 个url
+    let at_least = 10000;
+    let topk_urls = vec![
+        "https://rust-random.github.io/book/guide-seq.html\n",
+        "https://lib.rs/crates/rand\n",
+        "https://github.com/Tsumida/topk/blob/master/src/lib.rs\n",
+        "https://lib.rs/crates/failure\n",
+        "https://lib.rs/crates/cargo-husky\n",
+        "https://lib.rs/crates/rust-embed\n",
+        "https://ol.gamersky.com/news/202003/1275197.shtml\n",
+        "https://www.gamersky.com/news/202003/1275181.shtml\n",
+        "http://i.gamersky.com/u/2945817/\n",
+        "https://voice.baidu.com/act/newpneumonia/newpneumonia/?from=osari_pc_1\n",
+    ].into_iter().map(|s| s.as_bytes()).collect::<Vec<&[u8]>>();
+
+    let size = topk_urls.len();
+    let mut bfw = BufWriter::with_capacity(100 * (1 << 20), File::create("./src/urls/case_2.txt").unwrap());
+    let total = at_least * size + ((size + 1)*size) >> 1;
+    let mut bytes_cnt = 0;
+    for _ in 0..total{
+        bytes_cnt += bfw.write(
+            topk_urls[rand::random::<usize>() % size]
+        ).unwrap();
     }
+    println!("total: {} Bytes\n", bytes_cnt);
 }
 
 #[test]
 fn test_core() {
     core()
+}
+
+#[test]
+#[ignore]
+fn test_gen_case() {
+    gen_case();
 }
