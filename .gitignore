@@ -17,3 +17,5 @@ Cargo.lock
 #me
 /src/urls
 /src/tmps
+/src/reduced
+/src/result
