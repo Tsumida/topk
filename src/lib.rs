@@ -256,7 +256,7 @@ mod test_topk{
     //#[ignore]
     fn test_gen_case() {
         let s = std::time::SystemTime::now();
-        gen_case(50000);
+        gen_case(30000);
         println!("take {} ms", std::time::SystemTime::now().duration_since(s).unwrap().as_millis());
     }
 
