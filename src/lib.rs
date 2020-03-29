@@ -6,6 +6,7 @@ use std::cmp::{Ordering, Ord, Reverse};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 
+use tempdir::TempDir;
 use serde::{Serialize, Deserialize};
 
 //  设每条url2KB(IE最大 2083char, 其他浏览器更长，如果是ascii --> 2KB)
@@ -47,7 +48,7 @@ impl PartialEq for StatEntry {
 /// This function need extra disk space as well as the large data.
 /// file_path is the path of large data.
 /// Assume that there is only one file and sufficient disk space and inodes.
-pub fn divider(num: usize, file_path: &str, mem_mb:usize ){
+pub fn divider(num: usize, file_path: &str, mem_mb:usize, tmp_dir: &TempDir){
     
     let buf_size = mem_mb * MB / num; 
     assert!(num <= 1024, format!("At most 1024 tmp files, got num = {}", num));
@@ -57,8 +58,9 @@ pub fn divider(num: usize, file_path: &str, mem_mb:usize ){
     // But it's ok for reducer.
     let mut tmps = Vec::with_capacity(num);
     for i in 0..num{
+        let p = tmp_dir.path().join(i.to_string());
         tmps.push(BufWriter::with_capacity(
-            buf_size, File::create(format!("./src/tmps/tmp_{}", i)).unwrap()
+            buf_size, File::create(&p).unwrap()
         ));
     }
 
@@ -71,7 +73,7 @@ pub fn divider(num: usize, file_path: &str, mem_mb:usize ){
     let mut cnts = vec![0usize; num];
     for l in bfr.lines(){
         if let Ok(row) = l{
-            // 注意的是，hasher内部状态不会清空，上一次hash的结果会影响下一次。
+            // 注意的是，hasher内部状态不会清空，上一次hash的结果会影响下一次。所以每一次都要创建新hasher
             let mut hasher = DefaultHasher::new();
             row.hash(&mut hasher); 
             let h = hasher.finish() as usize % num;
@@ -89,7 +91,7 @@ pub fn divider(num: usize, file_path: &str, mem_mb:usize ){
 
 // Read elements from temparary files produced by divider and find top-k elements sorted by occurences(desc).
 // assume that there is only one file.
-pub fn reduce(path: &Path, target_path: &PathBuf){
+pub fn reduce(path: &Path, target_path: &Path){
     let bf = BufReader::with_capacity(
         bf_cap, 
         File::open(path).unwrap()
@@ -132,36 +134,24 @@ pub fn reduce(path: &Path, target_path: &PathBuf){
 }
 
 // read direct files in the given directory.
-pub fn reducer(dir_path: &str, tmp_path: &str){
+pub fn reducer(dir_path: &Path, tmp_bf: &TempDir){
     // read file. 
-    let p = Path::new(dir_path);
-    if !p.is_dir() || !p.exists(){
-        panic!("Error");
-    }
     
-    let mut tmp_bf = PathBuf::new();
-    tmp_bf.push(tmp_path);
-    if !tmp_bf.exists(){
-        std::fs::create_dir(&tmp_bf).unwrap();
-    }else if !tmp_bf.is_dir(){
-        panic!("Non-dir.");
-    }
     let mut tmp_index = 0;
-    for entry in p.read_dir().expect("Error occurs while reading directory."){
+    for entry in dir_path.read_dir().expect("Error occurs while reading directory."){
         if let Ok(e) = entry{
             let fp = e.path();
             if fp.is_file(){
-                tmp_bf.push(tmp_index.to_string());
+                let p = tmp_bf.path().join(tmp_index.to_string());
                 println!("{:?}", e.path());
-                reduce(&fp, &tmp_bf);
-                tmp_bf.pop();
+                reduce(&fp, &p);
             }
             tmp_index += 1;
         }
     }
 }
 
-pub fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>, ){
+pub fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>){
     println!("merging {:?}",fp);
     let mut fr = File::open(fp).unwrap(); 
     let mut sbuf = String::with_capacity(100 * MB);
@@ -178,7 +168,7 @@ pub fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>, ){
 }
 
 // find top-k elements from temp files produced by reducer.
-pub fn merger(dir_path: &str, res_path: &str){
+pub fn merger(dir_path: &Path, res_path: &str){
     let p = Path::new(dir_path);
     if !p.is_dir() || !p.exists(){
         panic!("Error");
@@ -265,7 +255,7 @@ mod test_topk{
     fn test_divider() {
         let num = 31;
         let p = "./src/urls/input.txt";
-        divider(num, p, 800);
+        //divider(num, p, 800);
     }
 
     #[test]
@@ -273,7 +263,7 @@ mod test_topk{
     fn test_reducer() {
         let divided_path = "./src/tmps";
         let tmp_dir_path = "./src/reduced";
-        reducer(divided_path, tmp_dir_path);
+        //reducer(divided_path, tmp_dir_path);
     }
 
     #[test]
@@ -281,7 +271,7 @@ mod test_topk{
     fn test_merger() {
         let tmp_dir_path = "./src/reduced";
         let res_path = "./src/result";
-        merger(tmp_dir_path, res_path);
+        //merger(tmp_dir_path, res_path);
     }
 
     #[test]
