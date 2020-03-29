@@ -8,20 +8,19 @@ use std::collections::hash_map::DefaultHasher;
 
 use serde::{Serialize, Deserialize};
 
-//  Mapper: 
 //  设每条url2KB(IE最大 2083char, 其他浏览器更长，如果是ascii --> 2KB)
 //  100GB url ==> 50 M条, 用u32记录
 //  每条记录2KB(url) + 24B(String) + 4B(cnt) = 2076B
 //  假定 hashmap load factor 为 50%, 1K条url放入hashmap，需要 2 x 2076 B x 1000 = 4.15MB内存空间
-//  1 GB内存分配 --> 一次最多读入200K条，要830MB, 剩下部分给buffer + 其他--> 250次
+//  1 GB内存分配 --> 一次读入50K条，要215MB数据, hashmap需要两倍也就是一共645MB, 剩下部分给buffer + 其他--> 1000次
 
-const bf_cap:usize = 100 * (1 << 20); // 100MB
-const hash_cap:usize = 100 * (1 << 20); 
+const bf_cap:usize = 100 *  MB; // 100MB
+const hash_cap:usize = 100 *  MB; 
 const topk: usize = 4; // top k
 const MB: usize = 1 << 20;
 
 #[derive(Eq, Debug, Serialize, Deserialize)]
-struct StatEntry{
+pub struct StatEntry{
     cnt: u32,
     url: String,
 }
@@ -44,18 +43,17 @@ impl PartialEq for StatEntry {
     }
 }
 
-/// Divide the large data into num smaller temparary file, 
-/// which means this function need extra disk space as well as the large data.
+/// Divide the data into many temparary files so that counting will take less than 1GB mem space.
+/// This function need extra disk space as well as the large data.
 /// file_path is the path of large data.
 /// Assume that there is only one file and sufficient disk space and inodes.
-fn divider(num: usize, file_path: &str, mem_mb:usize ){
+pub fn divider(num: usize, file_path: &str, mem_mb:usize ){
     
-    // open file
     let buf_size = mem_mb * MB / num; 
     assert!(num <= 1024, format!("At most 1024 tmp files, got num = {}", num));
     assert!(buf_size >= (1 << 10), format!("Buffer is too small: {}", buf_size)); // at least 1KB buffer.
     
-    // the worst case is that: the large data contains only one url.
+    // the worst case: the data contains only one url.
     // But it's ok for reducer.
     let mut tmps = Vec::with_capacity(num);
     for i in 0..num{
@@ -91,7 +89,7 @@ fn divider(num: usize, file_path: &str, mem_mb:usize ){
 
 // Read elements from temparary files produced by divider and find top-k elements sorted by occurences(desc).
 // assume that there is only one file.
-fn reduce(path: &Path, target_path: &PathBuf){
+pub fn reduce(path: &Path, target_path: &PathBuf){
     let bf = BufReader::with_capacity(
         bf_cap, 
         File::open(path).unwrap()
@@ -134,7 +132,7 @@ fn reduce(path: &Path, target_path: &PathBuf){
 }
 
 // read direct files in the given directory.
-fn reducer(dir_path: &str, tmp_path: &str){
+pub fn reducer(dir_path: &str, tmp_path: &str){
     // read file. 
     let p = Path::new(dir_path);
     if !p.is_dir() || !p.exists(){
@@ -161,10 +159,9 @@ fn reducer(dir_path: &str, tmp_path: &str){
             tmp_index += 1;
         }
     }
-    
 }
 
-fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>, ){
+pub fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>, ){
     println!("merging {:?}",fp);
     let mut fr = File::open(fp).unwrap(); 
     let mut sbuf = String::with_capacity(100 * MB);
@@ -181,7 +178,7 @@ fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>, ){
 }
 
 // find top-k elements from temp files produced by reducer.
-fn merger(dir_path: &str, res_path: &str){
+pub fn merger(dir_path: &str, res_path: &str){
     let p = Path::new(dir_path);
     if !p.is_dir() || !p.exists(){
         panic!("Error");
@@ -214,10 +211,10 @@ fn merger(dir_path: &str, res_path: &str){
 }
 
 /// Remember append '\n' to each url.
-fn gen_case(){
+pub fn gen_case(){
     //let max_size = 1024; // url长度在1024Byte以内;
     //let k = 20; // top k 个url
-    let at_least = 50000;
+    let at_least = 100000;
     let topk_urls = vec![
         "https://rust-random.github.io/book/guide-seq.html\n",
         "https://lib.rs/crates/rand\n",
@@ -237,10 +234,12 @@ fn gen_case(){
         "https://down.gamersky.com/pc/201309/296720.shtml\n",
         "https://www.baidu.com/link?url=9j5tYoOerbZ9DLin7lNnJlk94g0C41xAYOPayV4tA0yBBGpRWN1yCPA-OuAnFANAXLpCsD0WJaoQEQ1jMQyK4q&wd=&eqid=b4bec90a00007e94000000065e7ee3c2\n",
         "https://blog.csdn.net/canot/article/details/53966987\n",
-    ].into_iter().map(|s| s.as_bytes()).collect::<Vec<&[u8]>>();
+    ].into_iter()
+    .map(|s| s.as_bytes())
+    .collect::<Vec<&[u8]>>();
 
     let size = topk_urls.len();
-    let mut bfw = BufWriter::with_capacity(100 * (1 << 20), File::create("./src/urls/input.txt").unwrap());
+    let mut bfw = BufWriter::with_capacity(100 *  MB, File::create("./src/urls/input.txt").unwrap());
     let total = at_least * size + ((size + 1)*size) >> 1;
     let mut bytes_cnt = 0;
     for _ in 0..total{
@@ -297,21 +296,5 @@ mod test_topk{
             h1,
             h2,
         );
-    }
-
-    #[test]
-    fn test_proc() {
-        gen_case();
-
-        let num = 31;
-        let p = "./src/urls/input.txt";
-        divider(num, p, 800);
-
-        let divided_path = "./src/tmps";
-        let tmp_dir_path = "./src/reduced";
-        reducer(divided_path, tmp_dir_path);
-
-        let res_path = "./src/result";
-        merger(tmp_dir_path, res_path);
     }
 }
