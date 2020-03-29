@@ -6,6 +6,7 @@ use std::cmp::{Ordering, Ord, Reverse};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 
+use rayon::prelude::*;
 use tempdir::TempDir;
 use serde::{Serialize, Deserialize};
 
@@ -15,9 +16,9 @@ use serde::{Serialize, Deserialize};
 //  假定 hashmap load factor 为 50%, 1K条url放入hashmap，需要 2 x 2076 B x 1000 = 4.15MB内存空间
 //  1 GB内存分配 --> 一次读入50K条，要215MB数据, hashmap需要两倍也就是一共645MB, 剩下部分给buffer + 其他--> 1000次
 
-const bf_cap:usize = 100 *  MB; // 100MB
+const bf_cap:usize = 50 *  MB; 
 const hash_cap:usize = 100 *  MB; 
-const topk: usize = 4; // top k
+const topk: usize = 100; // top k
 const MB: usize = 1 << 20;
 
 #[derive(Eq, Debug, Serialize, Deserialize)]
@@ -97,11 +98,14 @@ pub fn reduce(path: &Path, target_path: &Path){
         File::open(path).unwrap()
     );
     let mut counter:HashMap<String, u32> = HashMap::with_capacity(hash_cap);
+
     for line in bf.lines(){
         if let Ok(url) = line {
             *counter.entry(url).or_insert(0u32) += 1;
         }
     }
+
+    // parallel iter
 
     let mut bheap = BinaryHeap::with_capacity(topk);
     for (k, v) in counter.iter(){
@@ -138,10 +142,13 @@ pub fn reducer(dir_path: &Path, tmp_bf: &TempDir){
     // read file. 
     
     let mut tmp_index = 0;
-    for entry in dir_path.read_dir().expect("Error occurs while reading directory."){
-        if let Ok(e) = entry{
+    for entry in dir_path.read_dir()
+    .expect("Error occurs while reading directory.")
+    .enumerate(){
+        if let (i, Ok(e)) = entry{
             let fp = e.path();
             if fp.is_file(){
+                eprintln!("proc i = {}\n", i);
                 let p = tmp_bf.path().join(tmp_index.to_string());
                 println!("{:?}", e.path());
                 reduce(&fp, &p);
@@ -149,6 +156,26 @@ pub fn reducer(dir_path: &Path, tmp_bf: &TempDir){
             tmp_index += 1;
         }
     }
+}
+
+/// Processing many file in parallel.
+pub fn reducer_parallel(dir_path: &Path, tmp_bf: &TempDir){
+    // read file. 
+    let files = dir_path.read_dir()
+        .expect("Error occurs while reading directory.")
+        .filter(|e| e.is_ok())
+        .map(|e| e.unwrap().path())
+        .collect::<Vec<PathBuf>>();
+
+    files.par_iter().enumerate().for_each( |t|
+        {
+            let (tmp_index, fp) = t;
+            eprintln!("proc i = {}\n", tmp_index);
+            let p = tmp_bf.path().join(tmp_index.to_string());
+            //println!("{:?}", &fp);
+            reduce(&fp, &p);
+        }
+    );
 }
 
 pub fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>){
@@ -201,40 +228,21 @@ pub fn merger(dir_path: &Path, res_path: &str){
 }
 
 /// Remember append '\n' to each url.
-pub fn gen_case(){
-    //let max_size = 1024; // url长度在1024Byte以内;
-    //let k = 20; // top k 个url
-    let at_least = 100000;
-    let topk_urls = vec![
-        "https://rust-random.github.io/book/guide-seq.html\n",
-        "https://lib.rs/crates/rand\n",
-        "https://github.com/Tsumida/topk/blob/master/src/lib.rs\n",
-        "https://lib.rs/crates/failure\n",
-        "https://lib.rs/crates/cargo-husky\n",
-        "https://lib.rs/crates/rust-embed\n",
-        "https://ol.gamersky.com/news/202003/1275197.shtml\n",
-        "https://www.gamersky.com/news/202003/1275181.shtml\n",
-        "http://i.gamersky.com/u/2945817/\n",
-        "https://voice.baidu.com/act/newpneumonia/newpneumonia/?from=osari_pc_1\n",
-        "https://doc.rust-lang.org/std/io/trait.BufRead.html#method.read_line\n",
-        "https://doc.rust-lang.org/std/io/trait.BufRead.html#tymethod.consume\n",
-        "https://doc.rust-lang.org/std/io/trait.BufRead.html#method.read_until\n",
-        "https://www.gamersky.com/z/lostplanet2/\n",
-        "https://www.gamersky.com/news/202003/1275413.shtml\n",
-        "https://down.gamersky.com/pc/201309/296720.shtml\n",
-        "https://www.baidu.com/link?url=9j5tYoOerbZ9DLin7lNnJlk94g0C41xAYOPayV4tA0yBBGpRWN1yCPA-OuAnFANAXLpCsD0WJaoQEQ1jMQyK4q&wd=&eqid=b4bec90a00007e94000000065e7ee3c2\n",
-        "https://blog.csdn.net/canot/article/details/53966987\n",
-    ].into_iter()
-    .map(|s| s.as_bytes())
-    .collect::<Vec<&[u8]>>();
+pub fn gen_case(base: usize){
+    let raw_urls = BufReader::new(File::open("./urls/raw.txt").unwrap());
+    let topk_urls = raw_urls
+        .lines()
+        .filter(|url| url.is_ok())
+        .map(|url| url.unwrap() + "\n")
+        .collect::<Vec<String>>();
 
     let size = topk_urls.len();
-    let mut bfw = BufWriter::with_capacity(100 *  MB, File::create("./src/urls/input.txt").unwrap());
-    let total = at_least * size + ((size + 1)*size) >> 1;
+    let mut bfw = BufWriter::with_capacity(100 *  MB, File::create("./urls/input.txt").unwrap());
+    let total = base * size;
     let mut bytes_cnt = 0;
     for _ in 0..total{
         bytes_cnt += bfw.write(
-            topk_urls[rand::random::<usize>() % size]
+            topk_urls.get(rand::random::<usize>() % size).unwrap().as_bytes()
         ).unwrap();
     }
     println!("total: {} Bytes\n", bytes_cnt);
@@ -245,9 +253,11 @@ mod test_topk{
     use super::*;
 
     #[test]
-    #[ignore]
+    //#[ignore]
     fn test_gen_case() {
-        gen_case();
+        let s = std::time::SystemTime::now();
+        gen_case(50000);
+        println!("take {} ms", std::time::SystemTime::now().duration_since(s).unwrap().as_millis());
     }
 
     #[test]
@@ -287,4 +297,5 @@ mod test_topk{
             h2,
         );
     }
+
 }

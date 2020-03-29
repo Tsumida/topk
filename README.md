@@ -15,3 +15,19 @@ cnt=50221, url=https://lib.rs/crates/rand
 
 ```
 
+# V2
+同时处理多个文件。
+```
+total: 494 MB
+// v1
+divider  takes   1489ms
+reducer  takes   1016ms
+merger   takes      0ms
+
+// v2
+divider  takes   1477ms
+reducer  takes    953ms
+merger   takes      0ms
+
+
+```

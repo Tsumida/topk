@@ -15,7 +15,7 @@ Cargo.lock
 /target
 
 #me
-/src/urls
-/src/tmps
-/src/reduced
-/src/result
+/urls
+/tmps
+/reduced
+/result
