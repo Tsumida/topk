@@ -54,17 +54,119 @@ impl PartialEq for StatEntry {
     }
 }
 
+#[warn(dead_code)]
+// Too slow!
+pub fn divider_para(para: &Parameters){
+    
+    let buf_size = para.bf_cap; 
+    let num = para.num;
+    // 50M --> 4096 --> 12500 items --> 25MB * 2(load factor=0.5) --> 50MB per thread (reducer).
+    // 8 thread --> 400MB + buffer.
+    // the worst case: the data contains only one url.
+    // But it's ok for reducer.
+    assert!(num <= 4096, format!("At most 4096 tmp files, got num = {}", num));
+    assert!(buf_size >= (1 << 10), format!("Buffer is too small: {}", buf_size)); // at least 1KB buffer.
+    
+    let (url_send, url_recv) = std::sync::mpsc::sync_channel::<(usize, String)>(para.bf_cap);
+    let mut tdir_path = para.tdir_divider.path().to_path_buf();
+    // recv thread.
+    let recv_handler = std::thread::spawn(move || {
+        let mut cnts = vec![0usize; num];
+        let mut tmps = Vec::with_capacity(num);
+        for i in 0..num{
+            tdir_path.push(i.to_string());
+            tmps.push(BufWriter::with_capacity(
+                buf_size, File::create(&tdir_path).unwrap()
+            ));
+            tdir_path.pop();
+        }
+        // hashing: h = hash(url) --> tmp with index = h % num
+        // make sure that all the same url will be mapped into only one tmp file.
+        while let Ok(hurl) = url_recv.recv(){
+            let (h, url) = hurl;
+            tmps.get_mut(h).unwrap().write((url + "\n").as_bytes()).unwrap();
+            *cnts.get_mut(h).unwrap() += 1;
+        }
+                
+        cnts.iter().enumerate().for_each(
+            |t| eprintln!("tmp{}, {} urls.", t.0, t.1)
+        );
+        eprintln!("divide done.");
+    });
+
+    // is dir or file ?
+    let url_path = Path::new(&para.input_path);
+    let url_files = if url_path.is_dir(){
+        url_path.read_dir()
+        .expect("Error occurs while reading directory.")
+        .filter(|e| e.is_ok())
+        .map(|e| e.unwrap().path())
+        .collect::<Vec<PathBuf>>()
+    }else{
+        let mut p = PathBuf::new();
+        p.push(&para.input_path);
+        vec![p]
+    };
+    
+    // 同时处理两个文件，太多文件cpu会卡爆
+    let ck_size = 2;
+    for ck in url_files.chunks(ck_size){
+        let mut handlers = Vec::with_capacity(ck_size);
+        for pa in ck{
+            let sender = (&url_send).clone(); // clone.
+            let p = pa.clone();
+            let handler = std::thread::spawn(move || {
+                eprintln!("divider processing: {}", p.display());
+                let bfr = BufReader::with_capacity(
+                    buf_size, 
+                    File::open(&p).unwrap()
+                );
+                for l in bfr.lines(){
+                    if let Ok(row) = l{
+                        // 注意, hasher内部状态不会清空，上一次hash的结果会影响下一次。所以每一次都要创建新hasher
+                        let mut hasher = DefaultHasher::new();
+                        row.hash(&mut hasher); 
+                        let h = hasher.finish() as usize % num;
+                        if sender.send((h, row)).is_err(){
+                            eprintln!("{} done.", p.display());
+                            break;
+                        }
+                    }
+                }
+            });
+            handlers.push(handler);
+        }
+        for h in handlers{
+            h.join().unwrap();
+        }
+    }
+    
+
+}
+
 /// Divide the data into many temparary files so that counting will take less than 1GB mem space.
 /// This function need extra disk space as well as the large data.
 /// file_path is the path of large data.
 /// Assume that there is only one file and sufficient disk space and inodes.
 pub fn divider(para: &Parameters){
-    
-    let buf_size = para.bf_cap; 
+    let buf_size = 1 * MB;  // 每个小文件给1MB
     let num = para.num;
-    assert!(num <= 8096, format!("At most 8096 tmp files, got num = {}", num));
+    assert!(num <= 512, format!("At most 512 tmp files, got num = {}", num));
     assert!(buf_size >= (1 << 10), format!("Buffer is too small: {}", buf_size)); // at least 1KB buffer.
     
+    let url_path = Path::new(&para.input_path);
+    let url_files = if url_path.is_dir(){
+        url_path.read_dir()
+        .expect("Error occurs while reading directory.")
+        .filter(|e| e.is_ok())
+        .map(|e| e.unwrap().path())
+        .collect::<Vec<PathBuf>>()
+    }else{
+        let mut p = PathBuf::new();
+        p.push(&para.input_path);
+        vec![p]
+    };
+
     // the worst case: the data contains only one url.
     // But it's ok for reducer.
     let mut tmps = Vec::with_capacity(num);
@@ -77,27 +179,29 @@ pub fn divider(para: &Parameters){
 
     // hashing: h = hash(url) --> tmp with index = h % num
     // make sure that all the same url will be mapped into only one tmp file.
-    let bfr = BufReader::with_capacity(
-        100 * MB, 
-        File::open(&para.input_path).unwrap()
-    );
-    let mut cnts = vec![0usize; num];
-    for l in bfr.lines(){
-        if let Ok(row) = l{
-            // 注意的是，hasher内部状态不会清空，上一次hash的结果会影响下一次。所以每一次都要创建新hasher
-            let mut hasher = DefaultHasher::new();
-            row.hash(&mut hasher); 
-            let h = hasher.finish() as usize % num;
-            tmps[h].write((row + "\n").as_bytes()).unwrap();
-            cnts[h] += 1;
+    for pa in url_files{
+        eprintln!("Dividing {}", pa.display());
+        let bfr = BufReader::with_capacity(
+            para.bf_cap, 
+            File::open(&pa).unwrap()
+        );
+        let mut cnts = vec![0usize; num];
+        for l in bfr.lines(){
+            if let Ok(row) = l{
+                // 注意的是，hasher内部状态不会清空，上一次hash的结果会影响下一次。所以每一次都要创建新hasher
+                let mut hasher = DefaultHasher::new();
+                row.hash(&mut hasher); 
+                let h = hasher.finish() as usize % num;
+                tmps[h].write((row + "\n").as_bytes()).unwrap();
+                cnts[h] += 1;
+            }
         }
+        /*
+        cnts.iter().enumerate().for_each(
+            |t| println!("tmp{}: {}", t.0, t.1)
+        );*/
+
     }
-
-    cnts.iter().enumerate().for_each(
-        |t| println!("tmp{}: {}", t.0, t.1)
-    );
-    
-
 }
 
 // Read elements from temparary files produced by divider and find top-k elements sorted by occurences(desc).
@@ -144,7 +248,7 @@ pub fn reduce(para: &Parameters, path:&Path, target_path:&Path){
     let s = serde_json::to_string(&result).unwrap();
     let mut f = File::create(target_path).unwrap();
     f.write(s.as_bytes()).unwrap();
-    println!("p={} done,cnt={}", path.display(), cnt);
+    eprintln!("reduced: p={} ,cnt={}, done", path.display(), cnt);
 }
 
 // read direct files in the given directory.
@@ -158,9 +262,8 @@ pub fn reducer(para: &Parameters){
         if let (i, Ok(e)) = entry{
             let fp = e.path();
             if fp.is_file(){
-                eprintln!("proc i = {}\n", i);
                 let p = para.tdir_reducer.path().join(tmp_index.to_string());
-                println!("{:?}", e.path());
+                eprintln!("{:?}", e.path());
                 reduce(&para, &fp, &p);
             }
             tmp_index += 1;
@@ -180,16 +283,14 @@ pub fn reducer_parallel(para: &Parameters){
     files.par_iter().enumerate().for_each( |t|
         {
             let (tmp_index, fp) = t;
-            eprintln!("proc i = {}\n", tmp_index);
             let p = para.tdir_reducer.path().join(tmp_index.to_string());
-            //println!("{:?}", &fp);
             reduce(&para, &fp, &p);
         }
     );
 }
 
 pub fn merge(para: &Parameters, fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>){
-    println!("merging {:?}",fp);
+    eprintln!("merging {:?}",fp);
     let mut fr = File::open(fp).unwrap(); 
     let mut sbuf = String::with_capacity(100 * MB);
     fr.read_to_string(&mut sbuf).unwrap();
@@ -227,7 +328,7 @@ pub fn merger(para: &Parameters){
     }
     result.reverse();
     for ste in &result{
-        println!("cnt={}, url={}", ste.cnt, ste.url);
+        eprintln!("cnt={}, url={}", ste.cnt, ste.url);
     }
     let mut resf = BufWriter::with_capacity(10 * MB, File::create(&para.result_path).unwrap());
     for str in result{
@@ -255,7 +356,7 @@ pub fn gen_case(base: usize){
             topk_urls.get(rand::random::<usize>() % size).unwrap().as_bytes()
         ).unwrap();
     }
-    println!("total: {} Bytes\n", bytes_cnt);
+    eprintln!("total: {} Bytes\n", bytes_cnt);
 }
 
 #[cfg(test)]
@@ -267,7 +368,7 @@ mod test_topk{
     fn test_gen_case() {
         let s = std::time::SystemTime::now();
         gen_case(30000);
-        println!("take {} ms", std::time::SystemTime::now().duration_since(s).unwrap().as_millis());
+        eprintln!("take {} ms", std::time::SystemTime::now().duration_since(s).unwrap().as_millis());
     }
 
     #[test]

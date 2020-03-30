@@ -13,6 +13,11 @@ fn main(){
             SubCommand::with_name("example")
             .help("run example.")
             .arg(
+                Arg::with_name("src")
+                .takes_value(true)
+                .short("s")
+                .help("path of urls."))
+            .arg(
                 Arg::with_name("para")
                 .takes_value(false)
                 .short("p"))
@@ -35,6 +40,7 @@ fn main(){
                 Arg::with_name("base")
                 .takes_value(true)
                 .short("b"))
+                .help("The data generated will be base times the number of urls. for base = 100 and 150 urls, gen() will produce 15000 urls.")
         )
         .get_matches();
     
@@ -47,6 +53,8 @@ fn main(){
     }
 
     if let Some(exam) = matches.subcommand_matches("example"){
+        // path of urls. 
+        let input_path = exam.value_of("src").unwrap().to_string(); 
         let mut topk = 100;
         if let Some(p) = exam.value_of("topk"){
             topk = p.parse::<usize>().unwrap();
@@ -63,7 +71,7 @@ fn main(){
             num: num,
             bf_cap: 50 * MB,
             hash_cap: 50 * MB, 
-            input_path: "./urls/input.txt".to_string(),
+            input_path: input_path,
             tdir_divider: tdir_divider,
             tdir_reducer: tdir_reducer,
             result_path: "./result".to_string(),
@@ -94,7 +102,8 @@ fn proc(is_parallel: bool, para: &Parameters){
     let st5 = SystemTime::now();
 
    // println!("gen_case takes {:6}ms", st2.duration_since(st1).unwrap().as_millis());
-    println!("divider  takes {:6}ms", st3.duration_since(st2).unwrap().as_millis());
-    println!("reducer  takes {:6}ms", st4.duration_since(st3).unwrap().as_millis());
-    println!("merger   takes {:6}ms", st5.duration_since(st4).unwrap().as_millis());
+    eprintln!("divider  takes {:6}ms", st3.duration_since(st2).unwrap().as_millis());
+    eprintln!("reducer  takes {:6}ms", st4.duration_since(st3).unwrap().as_millis());
+    eprintln!("merger   takes {:6}ms", st5.duration_since(st4).unwrap().as_millis());
+    eprintln!("cleanning temparay files.");
 }

@@ -2,7 +2,9 @@
 用法:
 ```
 cargo build --release
-./target/release/cli -n 63 -p -t 10 // data被划分为63个小文件，使用并行处理，找出按出现次数降序排列前10个url。
+
+// data被划分为63个小文件，使用并行处理，找出按出现次数降序排列前10个url。
+./target/release/cli example -n 63 -p -t 10 -s ~/topk/src/urls/input.txt 
 ```
 
 将大量url按照出现次数降序排序，选出前k个url。
@@ -17,35 +19,23 @@ cargo build --release
 total: 710 MB
 
 num: 31
-// v1
-divider  takes   1448ms
-reducer  takes   3355ms
-merger   takes      1ms
-
-// v2
-divider  takes   1446ms
-reducer  takes   1048ms
-merger   takes      1ms
+                串行reduce  并行reduce
+divider  takes   1448ms      1446ms
+reducer  takes   3355ms      1048ms
+merger   takes      1ms         1ms
 
 num: 63
-// v1:
-divider  takes   1706ms
-reducer  takes   5651ms
-merger   takes      1ms
-
-// v2
-divider  takes   1667ms
-reducer  takes   1816ms
-merger   takes      2ms
-
-num: 127
-// v1
-divider  takes   1713ms
-reducer  takes  10307ms
-merger   takes      2ms
-
-// v2
-divider  takes   1725ms
-reducer  takes   3388ms
-merger   takes      3ms
+                串行reduce  并行reduce
+divider  takes   1706ms      1667ms
+reducer  takes   5651ms      1816ms
+merger   takes      1ms         2ms
+```
+如果文件较大，那么主要耗时的是divide阶段:
+```
+total: 710 MB * 3
+num： 63
+                串行reduce  并行reduce
+divider  takes   12455ms    12743ms
+reducer  takes   7349ms      1706ms
+merger   takes      4ms         4ms
 ```
