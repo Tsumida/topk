@@ -16,9 +16,18 @@ use serde::{Serialize, Deserialize};
 //  假定 hashmap load factor 为 50%, 1K条url放入hashmap，需要 2 x 2076 B x 1000 = 4.15MB内存空间
 //  1 GB内存分配 --> 一次读入50K条，要215MB数据, hashmap需要两倍也就是一共645MB, 剩下部分给buffer + 其他--> 1000次
 
-const bf_cap:usize = 50 *  MB; 
-const hash_cap:usize = 100 *  MB; 
-const topk: usize = 100; // top k
+pub struct Parameters{
+    pub num: usize, 
+    pub bf_cap: usize, 
+    pub hash_cap: usize,
+    pub topk: usize,
+    pub input_path: String,
+    pub tdir_divider: TempDir,
+    pub tdir_reducer: TempDir,
+    pub result_path: String,
+}
+
+
 const MB: usize = 1 << 20;
 
 #[derive(Eq, Debug, Serialize, Deserialize)]
@@ -49,17 +58,18 @@ impl PartialEq for StatEntry {
 /// This function need extra disk space as well as the large data.
 /// file_path is the path of large data.
 /// Assume that there is only one file and sufficient disk space and inodes.
-pub fn divider(num: usize, file_path: &str, mem_mb:usize, tmp_dir: &TempDir){
+pub fn divider(para: &Parameters){
     
-    let buf_size = mem_mb * MB / num; 
-    assert!(num <= 1024, format!("At most 1024 tmp files, got num = {}", num));
+    let buf_size = para.bf_cap; 
+    let num = para.num;
+    assert!(num <= 8096, format!("At most 8096 tmp files, got num = {}", num));
     assert!(buf_size >= (1 << 10), format!("Buffer is too small: {}", buf_size)); // at least 1KB buffer.
     
     // the worst case: the data contains only one url.
     // But it's ok for reducer.
     let mut tmps = Vec::with_capacity(num);
     for i in 0..num{
-        let p = tmp_dir.path().join(i.to_string());
+        let p = para.tdir_divider.path().join(i.to_string());
         tmps.push(BufWriter::with_capacity(
             buf_size, File::create(&p).unwrap()
         ));
@@ -69,7 +79,7 @@ pub fn divider(num: usize, file_path: &str, mem_mb:usize, tmp_dir: &TempDir){
     // make sure that all the same url will be mapped into only one tmp file.
     let bfr = BufReader::with_capacity(
         100 * MB, 
-        File::open(file_path).unwrap()
+        File::open(&para.input_path).unwrap()
     );
     let mut cnts = vec![0usize; num];
     for l in bfr.lines(){
@@ -92,12 +102,12 @@ pub fn divider(num: usize, file_path: &str, mem_mb:usize, tmp_dir: &TempDir){
 
 // Read elements from temparary files produced by divider and find top-k elements sorted by occurences(desc).
 // assume that there is only one file.
-pub fn reduce(path: &Path, target_path: &Path){
+pub fn reduce(para: &Parameters, path:&Path, target_path:&Path){
     let bf = BufReader::with_capacity(
-        bf_cap, 
+        para.bf_cap, 
         File::open(path).unwrap()
     );
-    let mut counter:HashMap<String, u32> = HashMap::with_capacity(hash_cap);
+    let mut counter:HashMap<String, u32> = HashMap::with_capacity(para.hash_cap);
 
     for line in bf.lines(){
         if let Ok(url) = line {
@@ -107,9 +117,9 @@ pub fn reduce(path: &Path, target_path: &Path){
 
     // parallel iter
 
-    let mut bheap = BinaryHeap::with_capacity(topk);
+    let mut bheap = BinaryHeap::with_capacity(para.topk);
     for (k, v) in counter.iter(){
-        if bheap.len() < topk{
+        if bheap.len() < para.topk{
             bheap.push(Reverse(StatEntry{
                 url: k.clone(),
                 cnt: *v,
@@ -124,8 +134,8 @@ pub fn reduce(path: &Path, target_path: &Path){
     }
 
     let mut cnt = 0;
-    let mut result = Vec::with_capacity(topk);
-    while cnt < topk && !bheap.is_empty(){
+    let mut result = Vec::with_capacity(para.topk);
+    while cnt < para.topk && !bheap.is_empty(){
         result.push(bheap.pop().unwrap().0);
         cnt += 1;
     }
@@ -138,20 +148,20 @@ pub fn reduce(path: &Path, target_path: &Path){
 }
 
 // read direct files in the given directory.
-pub fn reducer(dir_path: &Path, tmp_bf: &TempDir){
+pub fn reducer(para: &Parameters){
     // read file. 
     
     let mut tmp_index = 0;
-    for entry in dir_path.read_dir()
+    for entry in para.tdir_divider.path().read_dir()
     .expect("Error occurs while reading directory.")
     .enumerate(){
         if let (i, Ok(e)) = entry{
             let fp = e.path();
             if fp.is_file(){
                 eprintln!("proc i = {}\n", i);
-                let p = tmp_bf.path().join(tmp_index.to_string());
+                let p = para.tdir_reducer.path().join(tmp_index.to_string());
                 println!("{:?}", e.path());
-                reduce(&fp, &p);
+                reduce(&para, &fp, &p);
             }
             tmp_index += 1;
         }
@@ -159,9 +169,9 @@ pub fn reducer(dir_path: &Path, tmp_bf: &TempDir){
 }
 
 /// Processing many file in parallel.
-pub fn reducer_parallel(dir_path: &Path, tmp_bf: &TempDir){
+pub fn reducer_parallel(para: &Parameters){
     // read file. 
-    let files = dir_path.read_dir()
+    let files = para.tdir_divider.path().read_dir()
         .expect("Error occurs while reading directory.")
         .filter(|e| e.is_ok())
         .map(|e| e.unwrap().path())
@@ -171,21 +181,21 @@ pub fn reducer_parallel(dir_path: &Path, tmp_bf: &TempDir){
         {
             let (tmp_index, fp) = t;
             eprintln!("proc i = {}\n", tmp_index);
-            let p = tmp_bf.path().join(tmp_index.to_string());
+            let p = para.tdir_reducer.path().join(tmp_index.to_string());
             //println!("{:?}", &fp);
-            reduce(&fp, &p);
+            reduce(&para, &fp, &p);
         }
     );
 }
 
-pub fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>){
+pub fn merge(para: &Parameters, fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>){
     println!("merging {:?}",fp);
     let mut fr = File::open(fp).unwrap(); 
     let mut sbuf = String::with_capacity(100 * MB);
     fr.read_to_string(&mut sbuf).unwrap();
     let s: Vec<StatEntry> = serde_json::from_str(&sbuf).unwrap();
     for ste in s{
-        if bheap.len() < topk{
+        if bheap.len() < para.topk{
         bheap.push(Reverse(ste));
         }else if ste.cnt > bheap.peek().unwrap().0.cnt{ // 前K个元素最小的一个
             let _ = bheap.pop();
@@ -195,23 +205,23 @@ pub fn merge(fp: &PathBuf, bheap:&mut BinaryHeap<Reverse<StatEntry>>){
 }
 
 // find top-k elements from temp files produced by reducer.
-pub fn merger(dir_path: &Path, res_path: &str){
-    let p = Path::new(dir_path);
+pub fn merger(para: &Parameters){
+    let p = para.tdir_reducer.path();
     if !p.is_dir() || !p.exists(){
         panic!("Error");
     }
-    let mut bheap = BinaryHeap::with_capacity(topk);
+    let mut bheap = BinaryHeap::with_capacity(para.topk);
     p.read_dir()
     .expect("Error occurs while reading directory.")
     .for_each(|entry|{
         if let Ok(e) = entry{
             let fp = e.path();
             if fp.is_file(){
-                merge(&fp, &mut bheap);
+                merge(&para, &fp, &mut bheap);
             }
         }
     });
-    let mut result = Vec::with_capacity(topk);
+    let mut result = Vec::with_capacity(para.topk);
     while let Some(ste) = bheap.pop(){
         result.push(ste.0);
     }
@@ -219,7 +229,7 @@ pub fn merger(dir_path: &Path, res_path: &str){
     for ste in &result{
         println!("cnt={}, url={}", ste.cnt, ste.url);
     }
-    let mut resf = BufWriter::with_capacity(10 * MB, File::create(res_path).unwrap());
+    let mut resf = BufWriter::with_capacity(10 * MB, File::create(&para.result_path).unwrap());
     for str in result{
         resf.write(
             serde_json::to_string(&str).unwrap().as_bytes()
