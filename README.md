@@ -4,6 +4,7 @@
 cargo build --release
 
 // data被划分为63个小文件，使用并行处理，找出按出现次数降序排列前10个url。
+// 可以输入文件夹
 ./target/release/cli example -n 63 -p -t 10 -s ~/topk/src/urls/input.txt 
 ```
 
