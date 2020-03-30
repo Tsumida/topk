@@ -18,18 +18,19 @@ cargo build --release
 同时处理多个文件。total表示url文件的大小，num表示divide划分成的小文件个数。
 ```
 total: 710 MB
+k:10
 
 num: 31
                 串行reduce  并行reduce
-divider  takes   1448ms      1446ms
-reducer  takes   3355ms      1048ms
-merger   takes      1ms         1ms
+divider  takes   1430ms     1449ms
+reducer  takes   2248ms      679ms
+merger   takes      1ms        2ms
 
 num: 63
                 串行reduce  并行reduce
-divider  takes   1706ms      1667ms
-reducer  takes   5651ms      1816ms
-merger   takes      1ms         2ms
+divider  takes   1406ms      1508ms
+reducer  takes   3460ms      1135ms
+merger   takes      1ms         4ms
 ```
 如果文件较大，那么主要耗时的是divide阶段:
 ```
