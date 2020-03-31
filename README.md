@@ -15,12 +15,14 @@ example参数:
 # 过程
 将大量url按照出现次数降序排序，选出前k个url。
 分为三个步骤：
-1. divide: 使用`DefaultHasher`把url划分到某一个临时文件，确保的url划分到同一个临时文件中。
-1. reduce: 把divide产生的临时文件读入内存中，统计每种url出现次数，降序输出前k个。这里要求上一步划分出的每个小文件中，不同的url数目不能太多，避免HashMap占用过大内存。
+1. divide: 使用`DefaultHasher`把url哈希到某一个临时文件，确保的url划分到同一个临时文件中。这里通过用更大的num参数把大文件划分为更多临时文件，来使得一个临时文件读入内存中，产生的HashMap不会太大。
+1. reduce: 把divide产生的临时文件读入内存中，统计每种url出现次数，降序输出前k个。
 1. merger: 把reduce输出的临时文件读入内存，选取出其中前k个。
 
 根据url的分布和参数的变化，这三个阶段的耗时也会不同。
 同时处理多个文件。total表示url文件的大小，num表示divide划分成的小文件个数。
+
+使用gen_case()对600多条不同的url，按均匀分布生成约710MB url文件，作为cli example的输入，选择k=10，在不同的num下的耗时为：
 ```
 total: 710 MB
 k:10
