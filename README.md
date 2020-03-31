@@ -7,7 +7,12 @@ cargo build --release
 // 可以输入文件夹
 ./target/release/cli example -n 63 -p -t 10 -s ~/topk/src/urls/input.txt 
 ```
+example参数:
+- t: top-k，前k个
+- n: 划分成多少个文件
+- s: url文件的路径，也可以是包含url的文件夹的路径。
 
+# 过程
 将大量url按照出现次数降序排序，选出前k个url。
 分为三个步骤：
 1. divide: 使用`DefaultHasher`把url划分到某一个临时文件，确保的url划分到同一个临时文件中。
